@@ -3,413 +3,730 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import requests
 from pathlib import Path
+from functools import lru_cache
 
-# ==========================================
-# 1. PAGE CONFIGURATION
-# ==========================================
+# =====================================================
+# PAGE CONFIGURATION
+# =====================================================
 
 st.set_page_config(
-    page_title="ElectroFind | Smart Recommendations",
+    page_title="ElectroFind | Smart Product Finder",
     page_icon="⚡",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# ==========================================
-# 2. CUSTOM CSS
-# ==========================================
+DATA_FILE = BASE_DIR / "electronics_products.pkl"
+MODEL_FILE = BASE_DIR / "product_cosine_similarity.pkl"
+
+# =====================================================
+# CUSTOM CSS
+# =====================================================
 
 st.markdown("""
 <style>
+    .stApp {
+        background-color: #0e1117;
+    }
 
-.stApp {
-    background-color: #0f172a;
-    color: white;
-}
+    .main-title {
+        font-size: 42px;
+        font-weight: 800;
+        color: #ffffff;
+        margin-bottom: 0;
+    }
 
-header {
-    background-color: transparent !important;
-}
+    .subtitle {
+        color: #aab4c3;
+        font-size: 16px;
+        margin-bottom: 25px;
+    }
 
-h1 {
-    color: #38bdf8;
-    text-align: center;
-    font-size: 45px !important;
-}
+    .product-card {
+        background: #1b2330;
+        border: 1px solid #303b4b;
+        border-radius: 14px;
+        padding: 15px;
+        margin-bottom: 12px;
+    }
 
-h2, h3 {
-    color: #e2e8f0;
-}
+    .product-name {
+        color: #ffffff;
+        font-size: 17px;
+        font-weight: 700;
+        min-height: 55px;
+    }
 
-.subtitle {
-    text-align: center;
-    color: #94a3b8;
-    font-size: 18px;
-    margin-bottom: 30px;
-}
+    .product-info {
+        color: #c5ceda;
+        font-size: 14px;
+        line-height: 1.8;
+    }
 
-div[data-testid="stMetric"] {
-    background-color: #1e293b;
-    padding: 18px;
-    border-radius: 12px;
-}
+    .price {
+        color: #42d392;
+        font-size: 21px;
+        font-weight: 800;
+    }
 
-div.stButton > button {
-    background-color: #0284c7;
-    color: white;
-    border-radius: 8px;
-    border: none;
-    padding: 12px;
-    font-weight: bold;
-}
+    .similarity {
+        color: #73b7ff;
+        font-weight: 700;
+    }
 
-div.stButton > button:hover {
-    background-color: #0369a1;
-    color: white;
-}
+    div[data-testid="stMetric"] {
+        background: #1b2330;
+        border: 1px solid #303b4b;
+        padding: 15px;
+        border-radius: 12px;
+    }
 
-.product-card {
-    background-color: #1e293b;
-    padding: 15px;
-    border-radius: 12px;
-}
-
+    .footer {
+        text-align: center;
+        color: #8792a2;
+        padding: 25px;
+        font-size: 13px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ==========================================
-# 3. LOAD DATASET AND ML MODEL
-# ==========================================
+# =====================================================
+# LOAD DATA AND MODEL
+# =====================================================
 
 @st.cache_resource
-def load_data():
+def load_project():
 
-    products = pd.read_pickle(
-        BASE_DIR / "electronics_products.pkl"
-    )
-
-    similarity = joblib.load(
-        BASE_DIR / "product_cosine_similarity.pkl"
-    )
-
-    products = products.reset_index(drop=True)
-
-    if len(products) != similarity.shape[0]:
-        raise ValueError(
-            "Dataset and similarity matrix do not match."
+    if not DATA_FILE.exists():
+        raise FileNotFoundError(
+            "electronics_products.pkl file repository mein nahi mili."
         )
 
-    return products, similarity
+    if not MODEL_FILE.exists():
+        raise FileNotFoundError(
+            "product_cosine_similarity.pkl file repository mein nahi mili."
+        )
+
+    df = pd.read_pickle(DATA_FILE)
+    similarity = joblib.load(MODEL_FILE)
+
+    df = df.reset_index(drop=True)
+
+    if similarity.shape[0] != len(df):
+        raise ValueError(
+            "Dataset aur similarity matrix ka size match nahi kar raha."
+        )
+
+    if similarity.shape[1] != len(df):
+        raise ValueError(
+            "Similarity matrix ka column size dataset se match nahi karta."
+        )
+
+    required_columns = ["product_name"]
+
+    for column in required_columns:
+        if column not in df.columns:
+            raise ValueError(f"Dataset mein '{column}' column missing hai.")
+
+    return df, similarity
 
 
-try:
+# =====================================================
+# IMAGE FETCHING
+# =====================================================
 
-    products, cosine_sim = load_data()
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_image(url):
 
-except Exception as error:
+    if not isinstance(url, str):
+        return None
 
-    st.error(f"Model loading error: {error}")
-    st.stop()
+    url = url.strip()
+
+    if not url.startswith("http"):
+        return None
+
+    try:
+        response = requests.get(
+            url,
+            timeout=8,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
+
+        response.raise_for_status()
+
+        content_type = response.headers.get("Content-Type", "")
+
+        if not content_type.startswith("image/"):
+            return None
+
+        return response.content
+
+    except requests.RequestException:
+        return None
 
 
-# ==========================================
-# 4. HELPER FUNCTIONS
-# ==========================================
+def display_image(url):
 
-def get_image_url(product):
+    image_data = fetch_image(url)
 
-    image = product.get("img_link", None)
+    if image_data:
+        st.image(image_data, use_container_width=True)
+    else:
+        st.markdown(
+            """
+            <div style="
+                background:#273244;
+                height:180px;
+                border-radius:10px;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                color:#c5ceda;
+                font-size:16px;">
+                📦 Image Not Available
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    if isinstance(image, str) and image.startswith("http"):
-        return image
 
-    return None
+# =====================================================
+# HELPER FUNCTIONS
+# =====================================================
+
+def clean_text(value, default="Not available"):
+
+    if pd.isna(value):
+        return default
+
+    value = str(value).strip()
+
+    return value if value else default
 
 
-def recommend_products(product_name, top_n=5):
+def get_price(value):
 
-    matches = products[
-        products["product_name"].astype(str).str.lower()
-        == product_name.lower()
-    ]
+    if pd.isna(value):
+        return None
 
-    if matches.empty:
+    try:
+        cleaned = (
+            str(value)
+            .replace("₹", "")
+            .replace(",", "")
+            .replace(" ", "")
+        )
+
+        return float(cleaned)
+
+    except (ValueError, TypeError):
+        return None
+
+
+def format_price(value):
+
+    price = get_price(value)
+
+    if price is None:
+        return "Price unavailable"
+
+    return f"₹{price:,.0f}"
+
+
+def get_rating(value):
+
+    try:
+        rating = float(value)
+
+        if 0 <= rating <= 5:
+            return rating
+
+        return None
+
+    except (ValueError, TypeError):
+        return None
+
+
+def get_similarity_scores(matrix, index):
+
+    scores = matrix[index]
+
+    if hasattr(scores, "toarray"):
+        scores = scores.toarray()
+
+    return np.asarray(scores).flatten()
+
+
+# =====================================================
+# RECOMMENDATION ENGINE
+# =====================================================
+
+def recommend_products(
+    selected_index,
+    df,
+    similarity,
+    top_n=5
+):
+
+    scores = get_similarity_scores(
+        similarity,
+        selected_index
+    )
+
+    if len(scores) != len(df):
         return pd.DataFrame()
 
-    product_index = matches.index[0]
-
-    scores = list(
-        enumerate(cosine_sim[product_index])
-    )
-
-    scores = sorted(
-        scores,
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    scores = [
-        item for item in scores
-        if item[0] != product_index
-    ][:top_n]
+    ranked_indices = np.argsort(scores)[::-1]
 
     recommendations = []
 
-    for index, score in scores:
+    for index in ranked_indices:
 
-        product = products.iloc[index]
+        # Selected product ko recommendation mein mat dikhao
+        if index == selected_index:
+            continue
 
-        recommendations.append({
+        score = float(scores[index])
 
-            "Product Name": product.get("product_name"),
-            "Category": product.get("category"),
-            "Price": product.get("discounted_price"),
-            "Rating": product.get("rating"),
-            "Similarity": round(float(score) * 100, 2),
-            "Image": get_image_url(product)
+        # Zero similarity wale products skip karo
+        if score <= 0:
+            continue
 
-        })
+        product = df.iloc[index].to_dict()
+
+        product["similarity"] = score * 100
+        product["original_index"] = index
+
+        recommendations.append(product)
+
+        if len(recommendations) >= top_n:
+            break
 
     return pd.DataFrame(recommendations)
 
 
-# ==========================================
-# 5. HEADER
-# ==========================================
-
-st.markdown("<h1>⚡ ElectroFind</h1>", unsafe_allow_html=True)
+# =====================================================
+# HEADER
+# =====================================================
 
 st.markdown(
-    '<p class="subtitle">Smart Electronics Product Recommendation System</p>',
+    '<div class="main-title">⚡ ElectroFind</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">'
+    'Smart Electronics Product Recommendation System'
+    '</div>',
     unsafe_allow_html=True
 )
 
 st.divider()
 
 
-# ==========================================
-# 6. DASHBOARD METRICS
-# ==========================================
+# =====================================================
+# LOAD PROJECT
+# =====================================================
+
+try:
+
+    with st.spinner("Loading ElectroFind..."):
+
+        products, cosine_sim = load_project()
+
+except Exception as error:
+
+    st.error(f"Project loading error: {error}")
+
+    st.info(
+        "Check karo ki dono PKL files aur app.py "
+        "GitHub repository ke same root folder mein hain."
+    )
+
+    st.stop()
+
+
+# =====================================================
+# PREPARE DATA
+# =====================================================
+
+products["product_name"] = (
+    products["product_name"]
+    .fillna("Unnamed Product")
+    .astype(str)
+)
+
+if "category" not in products.columns:
+    products["category"] = "Other"
+
+if "rating" not in products.columns:
+    products["rating"] = np.nan
+
+if "discounted_price" not in products.columns:
+    products["discounted_price"] = np.nan
+
+if "img_link" not in products.columns:
+    products["img_link"] = None
+
+if "actual_price" not in products.columns:
+    products["actual_price"] = np.nan
+
+if "discount_percentage" not in products.columns:
+    products["discount_percentage"] = np.nan
+
+
+# =====================================================
+# DASHBOARD METRICS
+# =====================================================
+
+total_products = len(products)
+
+total_categories = products["category"].nunique()
+
+average_rating = pd.to_numeric(
+    products["rating"],
+    errors="coerce"
+).mean()
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
     st.metric(
         "Total Products",
-        len(products)
+        f"{total_products:,}"
     )
 
 with col2:
     st.metric(
-        "Product Categories",
-        products["category"].nunique()
+        "Categories",
+        f"{total_categories:,}"
     )
 
 with col3:
     st.metric(
-        "Recommendation Algorithm",
-        "TF-IDF"
+        "Average Rating",
+        f"{average_rating:.2f} / 5"
+        if pd.notna(average_rating)
+        else "N/A"
     )
 
 st.divider()
 
 
-# ==========================================
-# 7. SEARCH AND CATEGORY FILTER
-# ==========================================
+# =====================================================
+# SIDEBAR FILTERS
+# =====================================================
 
-st.subheader("🔍 Explore Electronics Products")
+st.sidebar.title("🔎 Find Products")
 
 categories = sorted(
-    products["category"].dropna().unique().tolist()
-)
-
-selected_category = st.selectbox(
-    "Select Product Category",
-    ["All Categories"] + categories
-)
-
-if selected_category == "All Categories":
-
-    filtered_products = products
-
-else:
-
-    filtered_products = products[
-        products["category"] == selected_category
-    ]
-
-product_names = sorted(
-    filtered_products["product_name"]
-    .dropna()
+    products["category"]
+    .fillna("Other")
+    .astype(str)
     .unique()
     .tolist()
 )
 
-if not product_names:
+selected_category = st.sidebar.selectbox(
+    "Select Category",
+    ["All Categories"] + categories
+)
 
-    st.warning("No products found in this category.")
-    st.stop()
+filtered_products = products.copy()
 
-selected_product = st.selectbox(
-    "Choose a Product",
-    product_names
+if selected_category != "All Categories":
+
+    filtered_products = filtered_products[
+        filtered_products["category"].astype(str)
+        == selected_category
+    ]
+
+search_query = st.sidebar.text_input(
+    "Search Product",
+    placeholder="Enter product name..."
+)
+
+if search_query:
+
+    filtered_products = filtered_products[
+        filtered_products["product_name"]
+        .str.contains(
+            search_query,
+            case=False,
+            na=False
+        )
+    ]
+
+sort_option = st.sidebar.selectbox(
+    "Sort Products",
+    [
+        "Default",
+        "Price: Low to High",
+        "Price: High to Low",
+        "Rating: High to Low"
+    ]
+)
+
+if sort_option == "Price: Low to High":
+
+    filtered_products = filtered_products.sort_values(
+        by="discounted_price",
+        key=lambda column: column.map(get_price),
+        ascending=True,
+        na_position="last"
+    )
+
+elif sort_option == "Price: High to Low":
+
+    filtered_products = filtered_products.sort_values(
+        by="discounted_price",
+        key=lambda column: column.map(get_price),
+        ascending=False,
+        na_position="last"
+    )
+
+elif sort_option == "Rating: High to Low":
+
+    filtered_products = filtered_products.sort_values(
+        by="rating",
+        key=lambda column: pd.to_numeric(
+            column,
+            errors="coerce"
+        ),
+        ascending=False,
+        na_position="last"
+    )
+
+st.sidebar.caption(
+    f"{len(filtered_products)} products found"
 )
 
 
-# ==========================================
-# 8. SELECTED PRODUCT DETAILS
-# ==========================================
+# =====================================================
+# PRODUCT SELECTION
+# =====================================================
 
-selected_row = products[
-    products["product_name"] == selected_product
-].iloc[0]
+st.subheader("🛍️ Choose Your Product")
 
-st.markdown("### 🛍️ Selected Product")
+if filtered_products.empty:
 
-col1, col2 = st.columns([1, 2])
+    st.warning(
+        "No products found. Try another search or category."
+    )
 
-with col1:
+    st.stop()
 
-    image_url = get_image_url(selected_row)
 
-    if image_url:
-        st.image(image_url, use_container_width=True)
-    else:
-        st.info("Product image not available.")
+# Use original dataframe indices for similarity matrix
+available_indices = filtered_products.index.tolist()
 
-with col2:
+selected_index = st.selectbox(
+    "Select a product to get similar recommendations",
 
-    st.subheader(selected_row["product_name"])
+    options=available_indices,
 
-    st.write("**Category:**", selected_row.get("category", "N/A"))
+    format_func=lambda index: (
+        products.iloc[index]["product_name"][:100]
+    )
+)
+
+
+# =====================================================
+# SELECTED PRODUCT DETAILS
+# =====================================================
+
+selected_product = products.iloc[selected_index]
+
+st.divider()
+
+st.subheader("📌 Selected Product")
+
+product_col1, product_col2 = st.columns([1, 2])
+
+with product_col1:
+
+    display_image(
+        selected_product.get("img_link")
+    )
+
+with product_col2:
+
+    st.markdown(
+        f"### {clean_text(selected_product['product_name'])}"
+    )
 
     st.write(
-        "**Price:**",
-        selected_row.get("discounted_price", "N/A")
+        "**Category:**",
+        clean_text(selected_product.get("category"))
+    )
+
+    st.markdown(
+        f'<div class="price">'
+        f'{format_price(selected_product.get("discounted_price"))}'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    rating = get_rating(
+        selected_product.get("rating")
     )
 
     st.write(
         "**Rating:**",
-        selected_row.get("rating", "N/A")
+        f"⭐ {rating}/5" if rating is not None else "Not available"
     )
 
     st.write(
-        "**Description:**",
-        selected_row.get("about_product", "No description available")
+        "**Original Price:**",
+        format_price(selected_product.get("actual_price"))
     )
 
+    discount = clean_text(
+        selected_product.get("discount_percentage")
+    )
+
+    st.write(
+        "**Discount:**",
+        discount
+    )
 
 st.divider()
 
 
-# ==========================================
-# 9. RECOMMENDATION SETTINGS
-# ==========================================
+# =====================================================
+# RECOMMENDATION SETTINGS
+# =====================================================
 
-st.subheader("🤖 AI Product Recommendations")
+st.subheader("🤖 Smart Recommendations")
 
 top_n = st.slider(
     "Number of recommendations",
-    min_value=1,
+    min_value=3,
     max_value=10,
     value=5
 )
 
 if st.button(
-    "🚀 Get Similar Products",
-    use_container_width=True
+    "✨ Get Similar Products",
+    use_container_width=True,
+    type="primary"
 ):
 
-    result = recommend_products(
-        selected_product,
-        top_n
-    )
+    with st.spinner("Finding similar products..."):
 
-    if result.empty:
+        recommendations = recommend_products(
+            selected_index,
+            products,
+            cosine_sim,
+            top_n
+        )
 
-        st.warning("No recommendations found.")
+    if recommendations.empty:
+
+        st.warning(
+            "No similar products found for this selection."
+        )
 
     else:
 
         st.success(
-            f"Found {len(result)} similar products!"
+            f"{len(recommendations)} similar products found!"
         )
 
-        st.markdown("### Recommended Products")
+        st.subheader("🎯 Recommended Products")
 
-        # ==================================
-        # 10. DISPLAY PRODUCT CARDS
-        # ==================================
+        # Display products in 3-column layout
+        for start in range(0, len(recommendations), 3):
 
-        for start in range(0, len(result), 3):
+            columns = st.columns(3)
 
-            cols = st.columns(3)
+            batch = recommendations.iloc[start:start + 3]
 
-            for col, (_, row) in zip(
-                cols,
-                result.iloc[start:start + 3].iterrows()
-            ):
+            for column, (_, product) in zip(columns, batch.iterrows()):
 
-                with col:
+                with column:
 
-                    with st.container(border=True):
+                    st.markdown(
+                        '<div class="product-card">',
+                        unsafe_allow_html=True
+                    )
 
-                        if row["Image"]:
+                    display_image(
+                        product.get("img_link")
+                    )
 
-                            st.image(
-                                row["Image"],
-                                use_container_width=True
-                            )
+                    st.markdown(
+                        f'<div class="product-name">'
+                        f'{clean_text(product.get("product_name"))}'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
 
-                        else:
+                    st.markdown(
+                        f'<div class="product-info">'
+                        f'Category: {clean_text(product.get("category"))}'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
 
-                            st.info("Image unavailable")
+                    st.markdown(
+                        f'<div class="price">'
+                        f'{format_price(product.get("discounted_price"))}'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
 
-                        st.markdown(
-                            f"**{row['Product Name']}**"
-                        )
+                    rating = get_rating(
+                        product.get("rating")
+                    )
 
-                        st.write(
-                            "Category:",
-                            row["Category"]
-                        )
+                    st.write(
+                        f"⭐ {rating}/5"
+                        if rating is not None
+                        else "⭐ Rating unavailable"
+                    )
 
-                        st.write(
-                            "Price:",
-                            row["Price"]
-                        )
+                    score = float(product["similarity"])
 
-                        st.write(
-                            "Rating:",
-                            row["Rating"]
-                        )
+                    st.markdown(
+                        f'<div class="similarity">'
+                        f'Similarity: {score:.2f}%'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
 
-                        st.write(
-                            "Similarity:",
-                            f"{row['Similarity']}%"
-                        )
+                    st.progress(
+                        min(max(score / 100, 0.0), 1.0)
+                    )
 
-                        st.progress(
-                            min(row["Similarity"] / 100, 1.0)
-                        )
+                    st.markdown(
+                        '</div>',
+                        unsafe_allow_html=True
+                    )
 
 
-# ==========================================
-# 11. FOOTER
-# ==========================================
+# =====================================================
+# FOOTER
+# =====================================================
 
 st.divider()
 
 st.markdown(
     """
-    <div style="text-align:center; color:#94a3b8;">
-        <h3>⚡ ElectroFind</h3>
-        <p>Machine Learning Based Product Recommendation System</p>
-        <p>Built using Python, Streamlit and TF-IDF</p>
+    <div class="footer">
+        ⚡ ElectroFind — Smart Electronics Recommendation System
+        <br>
+        Built using Python, Pandas, Scikit-learn and Streamlit
+        <br><br>
+        © 2026 ElectroFind
     </div>
     """,
     unsafe_allow_html=True
