@@ -1,6 +1,0 @@
-
-fastapi
-pandas
-numpy
-scikit-learn
-joblib
